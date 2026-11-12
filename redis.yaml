@@ -1,0 +1,136 @@
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: omni365-server-redis-config
+  namespace: omni365
+data:
+  redis.conf: |
+    port 6379
+    cluster-enabled yes
+    cluster-config-file /data/nodes.conf
+    cluster-node-timeout 5000
+    appendonly yes
+    dir /data
+    cluster-require-full-coverage no
+    maxmemory 400mb
+    maxmemory-policy volatile-lru
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: omni365-server-redis
+  namespace: omni365
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: omni365-server-redis
+  ports:
+    - name: client
+      port: 6379
+    - name: gossip
+      port: 16379
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: omni365-server-redis-client
+  namespace: omni365
+spec:
+  selector:
+    app: omni365-server-redis
+  ports:
+    - name: client
+      port: 6379
+---
+kind: StatefulSet
+apiVersion: apps/v1
+metadata:
+  name: omni365-server-redis
+  namespace: omni365
+  labels:
+    app.kubernetes.io/part-of: omni
+    app.openshift.io/runtime: redis
+spec:
+  serviceName: omni365-server-redis
+  replicas: 6
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: omni365-server-redis
+  template:
+    metadata:
+      labels:
+        app: omni365-server-redis
+    spec:
+      containers:
+        - name: redis
+          image: docker.io/redis:7
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              cp /conf/redis.conf /tmp/redis.conf
+              cat >> /tmp/redis.conf <<EOF
+              cluster-announce-ip $POD_IP
+              cluster-announce-hostname $POD_NAME.omni365-server-redis.$POD_NAMESPACE.svc.cluster.local
+              EOF
+              if [ -f /data/nodes.conf ]; then
+                grep -oE '[0-9.]+:6379@16379,[^ ]+' /data/nodes.conf | while IFS=, read addr host; do
+                  ip=$(getent hosts "$host" | cut -d' ' -f1)
+                  [ -n "$ip" ] && sed -i "s/${addr%%:*}:6379@16379,$host/$ip:6379@16379,$host/" /data/nodes.conf
+                done
+              fi
+              exec redis-server /tmp/redis.conf
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - containerPort: 6379
+            - containerPort: 16379
+          resources:
+            requests:
+              cpu: 250m
+              memory: 500Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            exec:
+              command:
+                [
+                  "sh",
+                  "-c",
+                  "redis-cli cluster info | grep -q cluster_state:ok",
+                ]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          volumeMounts:
+            - name: conf
+              mountPath: /conf
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: conf
+          configMap:
+            name: omni365-server-redis-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+
+# Command to create the Redis cluster after all pods are running:
+# oc exec -it omni365-server-redis-0 -- redis-cli --cluster create $(oc get pods -l app=omni365-server-redis -o jsonpath='{range.items[*]}{.status.podIP}:6379 {end}') --cluster-replicas 1

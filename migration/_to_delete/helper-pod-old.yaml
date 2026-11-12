@@ -1,0 +1,30 @@
+# Temporary pod on the OLD cluster: same image and PVC as the live Nextcloud pod, own resource limits.
+# The migration script runs here so the live pod (200m / 256Mi) is never touched.
+#   oc --context old -n $OLD_NS apply -f helper-pod-old.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: migration-helper
+spec:
+  restartPolicy: Never
+  serviceAccountName: nextcloud
+  securityContext:
+    runAsUser: 0
+  containers:
+    - name: helper
+      image: docker.io/s390x/nextcloud:production
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: 500m
+          memory: 256Mi
+        limits:
+          cpu: "2"
+          memory: 1Gi
+      volumeMounts:
+        - name: nextcloud
+          mountPath: /var/www/html
+  volumes:
+    - name: nextcloud
+      persistentVolumeClaim:
+        claimName: nextcloud

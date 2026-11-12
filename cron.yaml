@@ -1,0 +1,104 @@
+# Nextcloud background jobs: one dedicated runner, independent of how many web pods run.
+# Same image, PVC, CA bundle and object-store env as the omni365-server Deployment.
+# Runs cron.php every 5 minutes as the pod's own UID (the image's /cron.sh needs root for busybox crond).
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: omni365-server-cron
+  namespace: omni365
+  labels:
+    app: omni365-server-cron
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate          # never two runners side by side during a rollout
+  selector:
+    matchLabels:
+      app: omni365-server-cron
+  template:
+    metadata:
+      labels:
+        app: omni365-server-cron
+    spec:
+      containers:
+        - name: cron
+          image: quay.io/mohamedf0/omni365-server:v1   # same tag as server.yaml (all pods share the PVC)
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              /docker-entrypoint-hooks.d/before-starting/10-ca-bundle.sh
+              while true; do
+                if [ -f /var/www/html/cron.php ]; then
+                  php -f /var/www/html/cron.php
+                else
+                  echo "cron.php not present yet (web pod has not initialised the volume)"
+                fi
+                sleep 300
+              done
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: webroot
+              mountPath: /var/www/html
+            - name: service-ca
+              mountPath: /etc/omni365-ca
+              readOnly: true
+            - name: ca-bundle
+              mountPath: /docker-entrypoint-hooks.d/before-starting/10-ca-bundle.sh
+              subPath: 10-ca-bundle.sh
+            - name: ca-bundle
+              mountPath: /usr/local/etc/php/conf.d/zz-ca-bundle.ini
+              subPath: zz-ca-bundle.ini
+          env:
+            - name: XDG_CACHE_HOME
+              value: /tmp/.cache
+
+            ### Object Storage (identical to server.yaml) ###
+            - name: OBJECTSTORE_S3_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: omni365-server-s3
+                  key: BUCKET_NAME
+            - name: OBJECTSTORE_S3_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: omni365-server-s3
+                  key: BUCKET_HOST
+            - name: OBJECTSTORE_S3_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: omni365-server-s3
+                  key: BUCKET_PORT
+            - name: OBJECTSTORE_S3_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: omni365-server-s3
+                  key: AWS_ACCESS_KEY_ID
+            - name: OBJECTSTORE_S3_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: omni365-server-s3
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: OBJECTSTORE_S3_REGION
+              value: us-east-1
+            - name: OBJECTSTORE_S3_USEPATH_STYLE
+              value: "true"
+            - name: OBJECTSTORE_S3_AUTOCREATE
+              value: "false"
+            - name: OBJECTSTORE_S3_SSL
+              value: "true"
+      volumes:
+        - name: webroot
+          persistentVolumeClaim:
+            claimName: omni365-server
+        - name: service-ca
+          configMap:
+            name: omni365-service-ca
+        - name: ca-bundle
+          configMap:
+            name: omni365-ca-bundle
+            defaultMode: 0555

@@ -1,0 +1,19 @@
+# Temporary pod with the omni365-server PVC mounted, used only during migration (Phase 2.3).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: migration-helper
+  namespace: omni365
+spec:
+  restartPolicy: Never
+  containers:
+    - name: helper
+      image: quay.io/mohamedf0/omni365-server:v1   # same tag as server.yaml (all pods share the PVC)
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - name: webroot
+          mountPath: /var/www/html
+  volumes:
+    - name: webroot
+      persistentVolumeClaim:
+        claimName: omni365-server
